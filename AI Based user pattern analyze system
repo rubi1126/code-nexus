@@ -1,0 +1,563 @@
+const API_BASE = 'http://127.0.0.1:8001';
+
+let isDataGenerated = false;
+let isModelTrained = false;
+let dashboardData = null;
+let realTimeInterval = null;
+
+let pieChartInstance = null;
+let barChartInstance = null;
+let lineChartInstance = null;
+let modelChartInstance = null;
+
+// Check API Connection
+async function checkApi() {
+    try {
+        const res = await fetch(`${API_BASE}/`);
+        if (res.ok) {
+            const statusBadge = document.getElementById('api-status');
+            statusBadge.className = 'px-3 py-1 rounded-full text-xs font-medium bg-green-500/20 text-green-400 flex items-center gap-2';
+            statusBadge.innerHTML = '<div class="w-2 h-2 rounded-full bg-green-500"></div> API Connected';
+        }
+    } catch (e) {
+        console.warn("API not connected yet.");
+    }
+}
+
+setInterval(checkApi, 5000);
+checkApi();
+
+// Navigation
+function navigate(sectionId) {
+    document.querySelectorAll('.hidden-section, #section-home').forEach(el => {
+        el.style.display = 'none';
+    });
+    
+    document.querySelectorAll('nav button').forEach(btn => {
+        btn.className = 'w-full text-left px-4 py-3 rounded-lg hover:bg-gray-800 text-gray-300 font-medium flex items-center gap-3 transition-colors';
+    });
+    
+    document.getElementById(`section-${sectionId}`).style.display = 'block';
+    const activeBtn = document.getElementById(`nav-${sectionId}`);
+    if (activeBtn) {
+        activeBtn.className = 'w-full text-left px-4 py-3 rounded-lg bg-primary/20 text-primary font-medium flex items-center gap-3 transition-colors';
+    }
+    
+    const titles = {
+        'home': 'Home',
+        'dataset': 'Dataset Management',
+        'dashboard': 'AI Analytics Dashboard',
+        'simulator': 'What-If Simulator'
+    };
+    document.getElementById('page-title').innerText = titles[sectionId];
+
+    if (sectionId === 'dashboard' && isModelTrained) {
+        loadDashboardSummary();
+    }
+}
+
+document.getElementById('section-home').style.display = 'block';
+
+// Actions
+async function generateData() {
+    const btn = document.getElementById('btn-generate');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<div class="loader"></div> Generating...';
+    btn.disabled = true;
+
+    try {
+        const res = await fetch(`${API_BASE}/generate-data`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ n_users: 1000 })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            document.getElementById('gen-status').classList.remove('hidden');
+            isDataGenerated = true;
+            
+            const trainBtn = document.getElementById('btn-train');
+            trainBtn.classList.remove('opacity-50', 'pointer-events-none');
+        }
+    } catch (e) {
+        alert("Failed to connect to API. Is backend running?");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+
+async function trainModel() {
+    const btn = document.getElementById('btn-train');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<div class="loader"></div> Training Models...';
+    btn.disabled = true;
+
+    try {
+        const res = await fetch(`${API_BASE}/train-model`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            document.getElementById('training-results').classList.remove('hidden');
+            animateValue("metric-rf", 0, data.metrics.accuracy_rf * 100, 1500, "%");
+            animateValue("metric-lr", 0, data.metrics.accuracy_lr * 100, 1500, "%");
+            document.getElementById('metric-sil').innerText = data.metrics.silhouette_score.toFixed(3);
+            isModelTrained = true;
+        }
+    } catch (e) {
+        alert("Failed to train models.");
+    } finally {
+        btn.innerHTML = 'Models Trained Successfully';
+    }
+}
+
+// Animation helper for numbers
+function animateValue(id, start, end, duration, suffix="") {
+    if (start === end) return;
+    const obj = document.getElementById(id);
+    let startTimestamp = null;
+    const step = (timestamp) => {
+        if (!startTimestamp) startTimestamp = timestamp;
+        const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+        obj.innerHTML = (progress * (end - start) + start).toFixed(1) + suffix;
+        if (progress < 1) {
+            window.requestAnimationFrame(step);
+        }
+    };
+    window.requestAnimationFrame(step);
+}
+
+async function loadDashboardSummary() {
+    try {
+        const res = await fetch(`${API_BASE}/dashboard-summary`);
+        const data = await res.json();
+        
+        if (data.status === 'success') {
+            const isFirstLoad = !dashboardData;
+            const oldTotal = dashboardData ? dashboardData.total_users : 0;
+            const oldPower = dashboardData ? (dashboardData.distribution['Power User'] || 0) : 0;
+            
+            dashboardData = data;
+            
+            if(isFirstLoad) {
+                animateValue('dash-total-users', 0, dashboardData.total_users, 1500);
+                animateValue('dash-high-users', 0, dashboardData.distribution['Power User'] || 0, 1500);
+                animateValue('dash-med-users', 0, dashboardData.distribution['Casual Browser'] || 0, 1500);
+                animateValue('dash-irr-users', 0, dashboardData.distribution['Burst User'] || 0, 1500);
+            } else {
+                document.getElementById('dash-total-users').innerText = dashboardData.total_users;
+                document.getElementById('dash-high-users').innerText = dashboardData.distribution['Power User'] || 0;
+                document.getElementById('dash-med-users').innerText = dashboardData.distribution['Casual Browser'] || 0;
+                document.getElementById('dash-irr-users').innerText = dashboardData.distribution['Burst User'] || 0;
+            }
+            
+            updateDashboardUI();
+        }
+    } catch (e) {
+        console.error("Failed to load dashboard summary", e);
+    }
+}
+
+function updateDashboardUI() {
+    if (!dashboardData) return;
+
+    // AI Insights
+    const insightsList = document.getElementById('ai-insights-list');
+    insightsList.innerHTML = dashboardData.insights.map(i => `<li class="flex items-start gap-2 bg-gray-800/40 p-3 rounded-lg"><span class="flex-1">${i}</span></li>`).join('');
+
+    const recsList = document.getElementById('ai-recs-list');
+    recsList.innerHTML = dashboardData.recommendations.map(r => `<li class="flex items-start gap-2 bg-gray-800/40 p-3 rounded-lg"><i class="fa-solid fa-arrow-right text-accent mt-1"></i> <span class="flex-1">${r}</span></li>`).join('');
+
+    renderTable();
+    
+    // Listeners
+    const searchInput = document.getElementById('search-user');
+    const filterInput = document.getElementById('filter-user');
+    if(searchInput) searchInput.addEventListener('input', renderTable);
+    if(filterInput) filterInput.addEventListener('change', renderTable);
+
+    renderCharts(dashboardData);
+    if(dashboardData.heatmap_data) renderHeatmap(dashboardData.heatmap_data);
+    renderModelComparison(dashboardData.metrics);
+}
+
+function renderTable() {
+    if (!dashboardData) return;
+    
+    const searchInput = document.getElementById('search-user');
+    const filterInput = document.getElementById('filter-user');
+    const searchTerm = searchInput ? searchInput.value.toLowerCase() : "";
+    const filterClass = filterInput ? filterInput.value : "All";
+    
+    let filteredUsers = dashboardData.recent_users.filter(u => {
+        const matchesSearch = u.user_id.toLowerCase().includes(searchTerm);
+        const matchesFilter = filterClass === 'All' || u.label === filterClass;
+        return matchesSearch && matchesFilter;
+    });
+
+    // Limit to 50 for performance
+    filteredUsers = filteredUsers.slice(-50).reverse(); // show latest 50
+
+    const tbody = document.getElementById('user-table-body');
+    if (filteredUsers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="px-6 py-8 text-center text-gray-500">No users found matching criteria.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = filteredUsers.map(u => {
+        const isAnomaly = u.anomaly_type !== 'Normal';
+        const anomalyBadge = isAnomaly ? `<span class="ml-2 px-2 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 border border-red-500/50 uppercase tracking-wider animate-pulse">Anomaly</span>` : '';
+        
+        return `
+        <tr class="hover:bg-gray-800/50 transition-colors border-b border-gray-800/50 last:border-0">
+            <td class="px-6 py-4 font-medium">${u.user_id} ${anomalyBadge}</td>
+            <td class="px-6 py-4">
+                <span class="px-3 py-1 rounded-full text-xs font-semibold ${getLabelColor(u.label)} shadow-lg">
+                    ${u.label}
+                </span>
+            </td>
+            <td class="px-6 py-4">
+                <div class="flex items-center gap-2">
+                    <span class="font-bold">${u.activity_score.toFixed(1)}</span>
+                    <span class="${u.trend_direction === '↑' ? 'text-green-400' : u.trend_direction === '↓' ? 'text-red-400' : 'text-gray-400'} font-bold">${u.trend_direction}</span>
+                </div>
+            </td>
+            <td class="px-6 py-4">
+                <div class="w-full bg-gray-700/50 rounded-full h-1.5 mb-1 overflow-hidden">
+                    <div class="bg-gradient-to-r from-primary to-accent h-full rounded-full" style="width: ${u.consistency_index}%"></div>
+                </div>
+                <span class="text-[10px] text-gray-400 uppercase tracking-wider">${u.consistency_index.toFixed(0)}% Cons.</span>
+            </td>
+            <td class="px-6 py-4">
+                <span class="px-2 py-1 rounded text-xs font-semibold ${getChurnRiskColor(u.churn_risk || 'Low')}">
+                    ${u.churn_risk || 'Low'}
+                </span>
+            </td>
+            <td class="px-6 py-4 text-xs text-gray-400 truncate max-w-[150px]" title="${u.churn_message}">
+                ${u.churn_message}
+            </td>
+        </tr>
+    `}).join('');
+}
+
+function getChurnRiskColor(risk) {
+    if (risk === 'High') return 'bg-red-500/20 text-red-400 border border-red-500/30';
+    if (risk === 'Medium') return 'bg-yellow-500/20 text-yellow-500 border border-yellow-500/30';
+    return 'bg-green-500/20 text-green-400 border border-green-500/30';
+}
+
+function getLabelColor(label) {
+    switch(label) {
+        case 'Power User': return 'bg-accent/20 text-accent border border-accent/30';
+        case 'Casual Browser': return 'bg-yellow-500/20 text-yellow-500 border border-yellow-500/30';
+        case 'Passive User': return 'bg-red-500/20 text-red-400 border border-red-500/30';
+        case 'Returning User': return 'bg-blue-500/20 text-blue-400 border border-blue-500/30';
+        case 'Burst User': return 'bg-purple-500/20 text-purple-400 border border-purple-500/30';
+        default: return 'bg-gray-500/20 text-gray-400';
+    }
+}
+
+// Chart.js global defaults
+Chart.defaults.color = '#94a3b8';
+Chart.defaults.font.family = 'Inter, sans-serif';
+Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(15, 23, 42, 0.9)';
+Chart.defaults.plugins.tooltip.titleColor = '#fff';
+Chart.defaults.plugins.tooltip.padding = 10;
+Chart.defaults.plugins.tooltip.cornerRadius = 8;
+Chart.defaults.plugins.tooltip.borderColor = 'rgba(255,255,255,0.1)';
+Chart.defaults.plugins.tooltip.borderWidth = 1;
+
+function renderCharts(data) {
+    const dist = data.distribution;
+    const labels = Object.keys(dist);
+    const counts = Object.values(dist);
+    const colors = labels.map(l => {
+        if (l === 'Power User') return '#10b981';
+        if (l === 'Casual Browser') return '#eab308';
+        if (l === 'Passive User') return '#ef4444';
+        if (l === 'Returning User') return '#3b82f6';
+        if (l === 'Burst User') return '#a855f7';
+        return '#64748b';
+    });
+
+    if (pieChartInstance) pieChartInstance.destroy();
+    const ctxPie = document.getElementById('pieChart').getContext('2d');
+    pieChartInstance = new Chart(ctxPie, {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: counts,
+                backgroundColor: colors,
+                borderWidth: 2,
+                borderColor: '#1e293b',
+                hoverOffset: 10
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { usePointStyle: true, padding: 20 } }
+            },
+            cutout: '75%',
+            animation: { animateScale: true }
+        }
+    });
+
+    const avgScores = data.avg_scores;
+    const barLabels = Object.keys(avgScores);
+    const barData = Object.values(avgScores);
+    const barColors = barLabels.map(l => {
+        if (l === 'Power User') return '#10b981';
+        if (l === 'Casual Browser') return '#eab308';
+        if (l === 'Passive User') return '#ef4444';
+        if (l === 'Returning User') return '#3b82f6';
+        if (l === 'Burst User') return '#a855f7';
+        return '#64748b';
+    });
+
+    if (barChartInstance) barChartInstance.destroy();
+    const ctxBar = document.getElementById('barChart').getContext('2d');
+    barChartInstance = new Chart(ctxBar, {
+        type: 'bar',
+        data: {
+            labels: barLabels,
+            datasets: [{
+                label: 'Avg Engagement Score',
+                data: barData,
+                backgroundColor: barColors,
+                borderRadius: 6,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)', drawBorder: false } },
+                x: { grid: { display: false, drawBorder: false } }
+            },
+            plugins: { legend: { display: false } },
+            animation: { duration: 1000 }
+        }
+    });
+}
+
+function renderModelComparison(metrics) {
+    if(!metrics || !metrics.accuracy_rf) return;
+    if (modelChartInstance) modelChartInstance.destroy();
+    const ctx = document.getElementById('modelChart').getContext('2d');
+    
+    // Also including KMeans silhouette score scaled as a visual metric
+    modelChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Random Forest', 'Logistic Reg.', 'KMeans (Quality)'],
+            datasets: [{
+                label: 'Score (%)',
+                data: [metrics.accuracy_rf * 100, metrics.accuracy_lr * 100, metrics.silhouette_score * 100],
+                backgroundColor: ['#3b82f6', '#a855f7', '#10b981'],
+                borderRadius: 6
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: { max: 100, min: 0, grid: { color: 'rgba(255,255,255,0.05)' } },
+                x: { grid: { display: false } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+function renderHeatmap(heatmapData) {
+    if (!heatmapData) return;
+    const container = document.getElementById('heatmap-container');
+    
+    let html = '<div class="grid grid-cols-[auto_repeat(24,minmax(0,1fr))] gap-1 text-[10px] text-center min-w-[600px] mt-2">';
+    
+    html += '<div></div>'; 
+    for (let h = 0; h < 24; h++) {
+        html += `<div class="text-gray-500 font-mono">${h}</div>`;
+    }
+    
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    
+    for (let d = 0; d < 7; d++) {
+        html += `<div class="text-gray-400 font-medium text-right pr-2 self-center">${days[d]}</div>`;
+        for (let h = 0; h < 24; h++) {
+            const item = heatmapData.find(x => x.day === d && x.hour === h);
+            const val = item ? item.activity : 0;
+            
+            let opacity = Math.min(val / 80, 1);
+            let color = `rgba(16, 185, 129, ${opacity})`; // Accent color for heatmap
+            
+            if (val === 0) color = 'rgba(255, 255, 255, 0.02)';
+            
+            html += `<div class="h-6 rounded-[2px] transition-all hover:ring-2 hover:ring-white hover:z-10 relative cursor-pointer group" style="background-color: ${color}">
+                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs py-1 px-2 rounded whitespace-nowrap z-20 shadow-xl border border-gray-700">
+                    Activity: ${val}<br>${days[d]} ${h}:00
+                </div>
+            </div>`;
+        }
+    }
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+// Real-time Simulation
+async function toggleRealTime() {
+    const btn = document.getElementById('btn-realtime');
+    const badge = document.getElementById('realtime-badge');
+    
+    if (realTimeInterval) {
+        clearInterval(realTimeInterval);
+        realTimeInterval = null;
+        btn.innerHTML = '<i class="fa-solid fa-play"></i> Start Live Data';
+        btn.className = 'px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-medium transition-colors flex items-center gap-2';
+        badge.classList.add('hidden');
+    } else {
+        btn.innerHTML = '<i class="fa-solid fa-stop"></i> Stop Live Data';
+        btn.className = 'px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 rounded-lg text-sm font-medium transition-colors flex items-center gap-2';
+        badge.classList.remove('hidden');
+        
+        realTimeInterval = setInterval(async () => {
+            try {
+                await fetch(`${API_BASE}/simulate-traffic`, { method: 'POST' });
+                loadDashboardSummary();
+            } catch(e) {
+                console.error("Live traffic error", e);
+            }
+        }, 3500); // every 3.5s
+    }
+}
+
+// What-If Simulator
+async function runSimulator() {
+    const login = document.getElementById('sim-login').value;
+    const duration = document.getElementById('sim-duration').value;
+    const clicks = document.getElementById('sim-clicks').value;
+    const days = document.getElementById('sim-days').value;
+    const gap = document.getElementById('sim-gap').value;
+    
+    const reqData = {
+        login_count: parseInt(login),
+        session_duration: parseInt(duration),
+        clicks_per_session: parseInt(clicks),
+        active_days_per_week: parseFloat(days),
+        last_active_gap_days: parseInt(gap)
+    };
+    
+    const btn = document.getElementById('btn-sim-run');
+    btn.innerHTML = '<div class="loader mx-auto"></div>';
+    
+    try {
+        const res = await fetch(`${API_BASE}/predict`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(reqData)
+        });
+        const data = await res.json();
+        if(data.status === 'success') {
+            document.getElementById('sim-result-class').innerText = data.prediction;
+            document.getElementById('sim-result-class').className = `text-2xl font-bold ${getLabelColorText(data.prediction)}`;
+            
+            document.getElementById('sim-result-score').innerText = data.features.activity_score.toFixed(1);
+            document.getElementById('sim-result-churn').innerText = data.churn_message;
+            document.getElementById('sim-result-churn').className = `text-sm font-bold mt-2 ${data.churn_risk === 'High' ? 'text-red-400' : 'text-green-400'}`;
+        }
+    } catch(e) {
+        console.error(e);
+    } finally {
+        btn.innerHTML = 'Run Simulation <i class="fa-solid fa-flask"></i>';
+    }
+}
+
+function getLabelColorText(label) {
+    if(label === 'Power User') return 'text-accent';
+    if(label === 'Casual Browser') return 'text-yellow-500';
+    if(label === 'Passive User') return 'text-red-400';
+    if(label === 'Burst User') return 'text-purple-400';
+    return 'text-blue-400';
+}
+
+function exportCSV() {
+    if (!dashboardData || !dashboardData.recent_users) return;
+    const users = dashboardData.recent_users;
+    let csvContent = "data:text/csv;charset=utf-8,User ID,Predicted Class,Activity Score,Consistency Index,Churn Risk,Churn Message\\n";
+    users.forEach(u => {
+        csvContent += `${u.user_id},${u.label},${u.activity_score},${u.consistency_index},${u.churn_risk},"${u.churn_message}"\\n`;
+    });
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", "tensor26_report.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+function exportPDF() { window.print(); }
+
+// Chatbot functionality
+function toggleChat() {
+    const chatWindow = document.getElementById('chat-window');
+    chatWindow.classList.toggle('hidden');
+}
+
+async function handleChatSubmit(event) {
+    event.preventDefault();
+    const input = document.getElementById('chat-input');
+    const message = input.value.trim();
+    if (!message) return;
+
+    addChatMessage(message, 'user');
+    input.value = '';
+
+    const loadingId = addChatMessage('...', 'ai', true);
+
+    try {
+        const res = await fetch(`${API_BASE}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: message })
+        });
+        const data = await res.json();
+        
+        document.getElementById(loadingId).remove();
+        if (data.reply) {
+            addChatMessage(data.reply, 'ai');
+        } else {
+            addChatMessage("Sorry, I didn't understand that.", 'ai');
+        }
+    } catch (e) {
+        document.getElementById(loadingId).remove();
+        addChatMessage("Connection error. Is backend running?", 'ai');
+    }
+}
+
+function addChatMessage(text, sender, isLoading = false) {
+    const messages = document.getElementById('chat-messages');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `flex gap-2 ${sender === 'user' ? 'flex-row-reverse' : 'animate-fade-in-up'}`;
+    
+    const id = 'msg-' + Date.now();
+    msgDiv.id = id;
+
+    let avatar = sender === 'ai' ? `<div class="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center flex-shrink-0 shadow-lg shadow-primary/20"><i class="fa-solid fa-robot text-white text-xs"></i></div>` 
+                                 : `<div class="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0"><i class="fa-solid fa-user text-gray-300 text-xs"></i></div>`;
+    let bubbleClass = sender === 'ai' ? 'bg-gray-800 text-gray-200 rounded-tl-sm border border-gray-700 shadow-sm' : 'bg-primary text-white rounded-tr-sm shadow-md shadow-primary/20';
+
+    const content = isLoading ? '<div class="loader mx-auto" style="width:16px;height:16px;border-width:2px;border-top-color:#fff;"></div>' : text;
+
+    msgDiv.innerHTML = `${avatar}<div class="text-sm p-3 rounded-2xl ${bubbleClass} max-w-[80%] break-words leading-relaxed">${content}</div>`;
+
+    messages.appendChild(msgDiv);
+    messages.scrollTop = messages.scrollHeight;
+    
+    return id;
+}
